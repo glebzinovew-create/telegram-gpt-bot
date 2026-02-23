@@ -1,18 +1,26 @@
 import os
 import sqlite3
 from dotenv import load_dotenv
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from openai import OpenAI
 
 load_dotenv()
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY not set")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not set")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-from openai import OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI()
 
 # ===== DATABASE =====
 
-conn = sqlite3.connect("memory.db")
+conn = sqlite3.connect("memory.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -198,6 +206,11 @@ app.add_handler(
     MessageHandler(filters.Regex("🔊 Озвучить"), tts_handler)
 )
 
-print("Bot running...")
+import asyncio
 
-app.run_polling()
+async def main():
+    print("Bot running...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())

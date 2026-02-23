@@ -7,14 +7,14 @@ from openai import OpenAI
 
 load_dotenv()
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not set")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not set")
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 client = OpenAI()
 

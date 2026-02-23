@@ -5,6 +5,8 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
+# ===== LOAD ENV =====
+
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -16,7 +18,7 @@ if not OPENAI_API_KEY:
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not set")
 
-client = OpenAI()
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ===== DATABASE =====
 
@@ -133,9 +135,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🧠 Новая сессия":
 
         clear_memory(user_id)
-
         await update.message.reply_text("Память очищена")
-
         return
 
     if text == "⚙️ Помощь":
@@ -143,7 +143,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Просто напиши сообщение или отправь голос"
         )
-
         return
 
     msg = await update.message.reply_text("Думаю...")
@@ -186,7 +185,7 @@ async def tts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         voice=open("reply.mp3", "rb")
     )
 
-# ===== MAIN =====
+# ===== APP =====
 
 app = Application.builder().token(
     TELEGRAM_TOKEN
@@ -195,7 +194,7 @@ app = Application.builder().token(
 app.add_handler(CommandHandler("start", start))
 
 app.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
+    MessageHandler(filters.Regex("^🔊 Озвучить$"), tts_handler)
 )
 
 app.add_handler(
@@ -203,14 +202,11 @@ app.add_handler(
 )
 
 app.add_handler(
-    MessageHandler(filters.Regex("🔊 Озвучить"), tts_handler)
+    MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
 )
 
-import asyncio
+# ===== START BOT =====
 
-async def main():
-    print("Bot running...")
-    await app.run_polling()
+print("Bot running...")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run_polling()

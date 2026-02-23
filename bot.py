@@ -2,20 +2,37 @@ import os
 import sqlite3
 import asyncio
 from dotenv import load_dotenv
+
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+
 from openai import OpenAI
 
 # ========================
-# ENV
+# LOAD ENV
 # ========================
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not set")
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY not set")
+
+# ВАЖНО: НЕ передаем api_key вручную
+client = OpenAI()
+
+print("✅ ENV loaded")
 
 # ========================
 # DATABASE
@@ -26,11 +43,12 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS memory(
-user_id TEXT,
-role TEXT,
-content TEXT
+    user_id TEXT,
+    role TEXT,
+    content TEXT
 )
 """)
+
 conn.commit()
 
 
@@ -53,8 +71,10 @@ def load_memory(user_id, limit=20):
         """,
         (user_id, limit),
     )
+
     rows = cursor.fetchall()
     rows.reverse()
+
     return [{"role": r[0], "content": r[1]} for r in rows]
 
 
@@ -80,42 +100,37 @@ keyboard = ReplyKeyboardMarkup(
 )
 
 # ========================
-# FAST STREAM GPT
+# GPT SAFE CALL
 # ========================
 
-async def ask_gpt_stream(update, user_id, text):
+async def ask_gpt(user_id, text):
 
-    save_memory(user_id, "user", text)
+    try:
 
-    memory = load_memory(user_id)
+        save_memory(user_id, "user", text)
 
-    msg = await update.message.reply_text("Думаю...")
+        messages = load_memory(user_id)
 
-    full_text = ""
-
-    def generate():
-
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=memory,
-            temperature=0.7,
-            stream=True,
+        # выполняем в отдельном потоке (ВАЖНО)
+        response = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.7,
+            )
         )
 
-        result = ""
+        reply = response.choices[0].message.content
 
-        for chunk in stream:
+        save_memory(user_id, "assistant", reply)
 
-            if chunk.choices[0].delta.content:
-                result += chunk.choices[0].delta.content
+        return reply
 
-        return result
+    except Exception as e:
 
-    reply = await asyncio.to_thread(generate)
+        print("GPT ERROR:", e)
 
-    save_memory(user_id, "assistant", reply)
-
-    await msg.edit_text(reply)
+        return "❌ Ошибка GPT. Проверь OPENAI_API_KEY"
 
 
 # ========================
@@ -124,15 +139,22 @@ async def ask_gpt_stream(update, user_id, text):
 
 async def voice_to_text(path):
 
-    def transcribe():
-        with open(path, "rb") as audio:
-            result = client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=audio,
-            )
-            return result.text
+    try:
 
-    return await asyncio.to_thread(transcribe)
+        transcript = await asyncio.to_thread(
+            lambda: client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=open(path, "rb"),
+            )
+        )
+
+        return transcript.text
+
+    except Exception as e:
+
+        print("STT ERROR:", e)
+
+        return None
 
 
 # ========================
@@ -141,17 +163,26 @@ async def voice_to_text(path):
 
 async def text_to_voice(text, path):
 
-    def generate():
-        return client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=text,
+    try:
+
+        response = await asyncio.to_thread(
+            lambda: client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=text,
+            )
         )
 
-    audio = await asyncio.to_thread(generate)
+        with open(path, "wb") as f:
+            f.write(response.content)
 
-    with open(path, "wb") as f:
-        f.write(audio.content)
+        return True
+
+    except Exception as e:
+
+        print("TTS ERROR:", e)
+
+        return False
 
 
 # ========================
@@ -161,7 +192,7 @@ async def text_to_voice(text, path):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        "⚡ Быстрый GPT бот готов",
+        "🚀 GPT бот готов",
         reply_markup=keyboard,
     )
 
@@ -175,19 +206,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         clear_memory(user_id)
 
-        await update.message.reply_text("Память очищена")
+        await update.message.reply_text("✅ Память очищена")
 
         return
 
     if text == "⚙️ Помощь":
 
         await update.message.reply_text(
-            "Отправь текст или голос"
+            "Напиши сообщение или отправь голос"
         )
 
         return
 
-    await ask_gpt_stream(update, user_id, text)
+    msg = await update.message.reply_text("💭 Думаю...")
+
+    reply = await ask_gpt(user_id, text)
+
+    await msg.edit_text(reply)
 
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,7 +239,15 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = await voice_to_text(path)
 
-    await ask_gpt_stream(update, user_id, text)
+    if not text:
+
+        await update.message.reply_text("❌ Ошибка распознавания")
+
+        return
+
+    reply = await ask_gpt(user_id, text)
+
+    await update.message.reply_text(reply)
 
 
 async def tts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,35 +266,47 @@ async def tts_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     path = f"reply_{user_id}.mp3"
 
-    await text_to_voice(last, path)
+    ok = await text_to_voice(last, path)
 
-    with open(path, "rb") as audio:
+    if not ok:
 
-        await update.message.reply_voice(audio)
+        await update.message.reply_text("Ошибка озвучки")
+
+        return
+
+    await update.message.reply_voice(
+        voice=open(path, "rb")
+    )
 
 
 # ========================
-# APP
+# MAIN
 # ========================
 
-app = Application.builder().token(
-    TELEGRAM_TOKEN
-).build()
+def main():
 
-app.add_handler(CommandHandler("start", start))
+    print("🚀 Bot starting...")
 
-app.add_handler(
-    MessageHandler(filters.Regex("^🔊 Озвучить$"), tts_handler)
-)
+    app = Application.builder().token(
+        TELEGRAM_TOKEN
+    ).build()
 
-app.add_handler(
-    MessageHandler(filters.VOICE, voice_handler)
-)
+    app.add_handler(CommandHandler("start", start))
 
-app.add_handler(
-    MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
-)
+    app.add_handler(
+        MessageHandler(filters.Regex("^🔊 Озвучить$"), tts_handler)
+    )
 
-print("⚡ Fast bot running...")
+    app.add_handler(
+        MessageHandler(filters.VOICE, voice_handler)
+    )
 
-app.run_polling()
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
+    )
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
